@@ -65,13 +65,15 @@ test("defaults to sandbox and reports configured providers", async () => {
   const { call } = await connect({ BULKSMSBD_API_KEY: "k" }, {});
   const { data } = await call("connector_status");
   assert.equal(data.mode, "sandbox");
-  assert.deepEqual(data.providers, { bkash: false, nagad: false, sslcommerz: false, sms: true });
+  assert.deepEqual(data.providers, { bkash: false, nagad: false, sslcommerz: false, shurjopay: false, aamarpay: false, sms: true });
 });
 
 test("lists every tool", async () => {
   const { client } = await connect({}, {});
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
+    "aamarpay_create_payment",
+    "aamarpay_get_payment",
     "bkash_create_payment",
     "bkash_execute_payment",
     "bkash_get_payment",
@@ -79,6 +81,12 @@ test("lists every tool", async () => {
     "connector_status",
     "nagad_create_payment",
     "nagad_get_payment",
+    "payment_check",
+    "payment_create",
+    "payment_refund",
+    "payments_list",
+    "shurjopay_create_payment",
+    "shurjopay_get_payment",
     "sms_balance",
     "sms_send",
     "sslcommerz_create_payment",

@@ -1,34 +1,49 @@
 # Flowthera BD Connector
 
-Free, open-source [MCP](https://modelcontextprotocol.io) connector that lets Claude and other AI agents take payments and send SMS in Bangladesh.
+Free, open-source payment and SMS system for Bangladesh. Take payments with **bKash, Nagad, Rocket, Upay, cards and net banking**, get a clear **success or failed** result with the amount, customer and transaction ID, and let your customers and yourself know by **SMS**.
+
+Use it the way that suits you:
+
+| You want to... | Use | Guide |
+|---|---|---|
+| Take payments without writing code | The ready payment server: a checkout page, receipts and a dashboard | [Setup guide](docs/setup-guide.md) |
+| Add payments to your website or app (any language) | The payment server's JSON API and webhooks | [API and webhooks](docs/api.md) |
+| Add payments inside your Node.js project | The library: `import { BdConnector } from "@flowthera/bd-connector"` | [Node.js library](docs/node-library.md) |
+| Let Claude or another AI agent take payments | The MCP connector | [Claude setup](docs/claude.md) |
 
 **Website:** https://bd-connector-flowthera.new-website.workers.dev/products/bd-connector/
 
-Ask your agent things like *"Create a bKash payment link for ৳500 for invoice INV-1042"*, *"Make a Nagad payment link for order 2201"*, *"Has order T-88 been paid on SSLCommerz?"* or *"Text the customer that their order has shipped."*
+> **Sandbox by default.** Out of the box it only talks to the gateways' test systems and never sends real SMS. Nothing moves real money until you set `BD_CONNECTOR_MODE=live` with your own merchant credentials.
 
-> **Sandbox by default.** Out of the box it talks only to the bKash, Nagad and SSLCommerz test gateways and never sends SMS. Nothing moves real money until you set `BD_CONNECTOR_MODE=live` with your own merchant credentials.
+## How a payment works
 
-## Tools
+```
+Your site / Claude / checkout page
+        │  1. create payment (amount, customer, gateway)
+        ▼
+  BD Connector ──────────────► Gateway (bKash, Nagad, SSLCommerz, shurjoPay, aamarPay)
+        ▲   2. customer pays on the gateway's page     │
+        │   3. gateway sends the customer back ◄────────┘
+        │   4. connector confirms the result with the gateway (never trusts the redirect)
+        ▼
+  5. Result saved: success / failed / cancelled, amount, customer, transaction ID
+  6. Your system is told: signed webhook, event in Node.js, redirect to your page
+  7. SMS: receipt to the customer, alert to you
+```
 
-| Provider | Tool | What it does |
+## Gateways
+
+| Gateway | Customers can pay with | Refunds from the connector |
 |---|---|---|
-| — | `connector_status` | Shows the mode and which providers are configured |
-| bKash | `bkash_create_payment` | Starts a payment and returns the link where the customer approves it |
-| | `bkash_execute_payment` | Completes the payment after the customer approves |
-| | `bkash_get_payment` | Looks up a payment's status |
-| | `bkash_refund` | Full or partial refund |
-| Nagad | `nagad_create_payment` | Starts a payment and returns the link where the customer pays |
-| | `nagad_get_payment` | Confirms with Nagad whether the payment succeeded |
-| SSLCommerz | `sslcommerz_create_payment` | Opens a hosted checkout (cards, mobile banking, net banking) |
-| | `sslcommerz_get_payment` | Looks up a payment by your transaction id |
-| | `sslcommerz_refund` | Requests a refund |
-| | `sslcommerz_get_refund` | Checks a refund's status |
-| BulkSMSBD | `sms_send` | Sends an SMS to one or more numbers (dry run in sandbox mode) |
-| | `sms_balance` | Shows the remaining SMS balance |
+| bKash | bKash | Yes |
+| Nagad | Nagad | No (use the Nagad panel) |
+| SSLCommerz | Cards, bKash, Nagad, Rocket, Upay, net banking | Yes |
+| shurjoPay | bKash, Nagad, Rocket, Upay, cards, net banking | No (use the shurjoPay panel) |
+| aamarPay | bKash, Nagad, Rocket, Upay, cards | No (use the aamarPay panel) |
 
-Nagad refunds aren't included yet.
+Rocket and Upay have no open merchant API of their own, so they come through SSLCommerz, shurjoPay or aamarPay. SMS goes through [BulkSMSBD](https://bulksmsbd.net). How to get each gateway's test and live keys: [gateway guide](docs/gateways.md).
 
-## Install
+## Quick start (5 minutes, sandbox)
 
 You need [Node.js](https://nodejs.org) 20 or newer.
 
@@ -36,76 +51,29 @@ You need [Node.js](https://nodejs.org) 20 or newer.
 git clone https://github.com/Flowthera/bd-connector
 cd bd-connector
 npm install
-npm run build
+cp .env.example .env      # then fill in at least one gateway's sandbox keys
+npm run serve
 ```
 
-### Claude Desktop
+Open http://localhost:8080/pay to see the checkout page. For gateways to send customers back, the server needs a public address; the [setup guide](docs/setup-guide.md) shows a free way to get one for testing and how to put it online.
 
-Open **Settings → Developer → Edit Config** and add the connector to `claude_desktop_config.json`. Fill in only the providers you use:
+## Docs
 
-```json
-{
-  "mcpServers": {
-    "bd-connector": {
-      "command": "node",
-      "args": ["/full/path/to/bd-connector/dist/index.js"],
-      "env": {
-        "BD_CONNECTOR_MODE": "sandbox",
-        "BKASH_APP_KEY": "...",
-        "BKASH_APP_SECRET": "...",
-        "BKASH_USERNAME": "...",
-        "BKASH_PASSWORD": "...",
-        "BKASH_CALLBACK_URL": "https://your-site.com/payment/done",
-        "NAGAD_MERCHANT_ID": "...",
-        "NAGAD_MERCHANT_NUMBER": "01XXXXXXXXX",
-        "NAGAD_MERCHANT_PRIVATE_KEY": "...",
-        "NAGAD_PUBLIC_KEY": "...",
-        "NAGAD_CALLBACK_URL": "https://your-site.com/payment/done",
-        "SSLCOMMERZ_STORE_ID": "...",
-        "SSLCOMMERZ_STORE_PASSWORD": "...",
-        "SSLCOMMERZ_SUCCESS_URL": "https://your-site.com/payment/done",
-        "BULKSMSBD_API_KEY": "...",
-        "BULKSMSBD_SENDER_ID": "..."
-      }
-    }
-  }
-}
-```
-
-Restart Claude Desktop, then ask: *"What's the BD connector status?"*
-
-### Claude Code
-
-```bash
-claude mcp add bd-connector \
-  -e BD_CONNECTOR_MODE=sandbox \
-  -e SSLCOMMERZ_STORE_ID=... -e SSLCOMMERZ_STORE_PASSWORD=... \
-  -e SSLCOMMERZ_SUCCESS_URL=https://your-site.com/payment/done \
-  -- node /full/path/to/bd-connector/dist/index.js
-```
-
-Every setting is listed in [`.env.example`](.env.example).
-
-## Getting test credentials
-
-- **SSLCommerz:** register a free sandbox store at [developer.sslcommerz.com](https://developer.sslcommerz.com/registration/). Your store id and password arrive by email.
-- **bKash:** sandbox credentials for Tokenized Checkout come from bKash's developer portal or your bKash merchant contact. In the sandbox, approve payments with OTP `123456` and PIN `12121`.
-- **Nagad:** sandbox access comes from Nagad's merchant team when you apply for the payment gateway. They give you a merchant ID and Nagad's public key; you create your own key pair and register the public half with them. Keys can be pasted as PEM or as the bare base64 the portal shows.
-- **BulkSMSBD:** create an account at [bulksmsbd.net](https://bulksmsbd.net) for an API key and sender ID. In sandbox mode `sms_send` never calls the gateway, so you can try it without credit.
-
-## How a payment works
-
-1. The agent calls `bkash_create_payment`, `nagad_create_payment` or `sslcommerz_create_payment` and gets a `paymentUrl`.
-2. The customer opens the link and pays.
-3. For bKash, the agent calls `bkash_execute_payment` to complete it. For Nagad and SSLCommerz, it calls `nagad_get_payment` or `sslcommerz_get_payment` to confirm.
-
-Tools that move money or send SMS are marked as destructive, so clients like Claude ask before running them.
+- [Setup guide](docs/setup-guide.md): from zero to your first test payment, then going live
+- [Configuration](docs/configuration.md): every setting
+- [Payment data reference](docs/data-reference.md): every field, status, webhook and SMS template
+- [API and webhooks](docs/api.md): connect any website or app
+- [Node.js library](docs/node-library.md): use it inside your own project (Express example included)
+- [Claude setup](docs/claude.md): all MCP tools
+- [Gateways](docs/gateways.md): getting keys and testing each gateway
 
 ## Safety
 
-- Keys stay in your own environment. They are never logged or returned by any tool.
-- Sandbox is the default, and live mode must be switched on explicitly.
-- Run your own tests in sandbox mode before going live.
+- The result of every payment is checked with the gateway itself. A paid amount that differs from the order is never marked as paid.
+- Webhooks are signed (HMAC-SHA256), and the redirect to your site carries a signature too.
+- Keys stay in your own environment and are never logged or returned.
+- The JSON API and dashboard are off until you set a key and a password.
+- Sandbox is the default. Live mode must be switched on explicitly.
 
 ## Development
 

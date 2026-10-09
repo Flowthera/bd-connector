@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { constants, createPrivateKey, createSign, createVerify, generateKeyPairSync, publicEncrypt } from "node:crypto";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadConfig } from "../config.js";
 import type { FetchFn } from "../http.js";
 import { normalizeNumber } from "../providers/bulksmsbd.js";
+import { pkcs1Decrypt } from "../providers/nagad.js";
 import { createServer } from "../server.js";
 
 interface Call {
@@ -63,7 +65,7 @@ test("defaults to sandbox and reports configured providers", async () => {
   const { call } = await connect({ BULKSMSBD_API_KEY: "k" }, {});
   const { data } = await call("connector_status");
   assert.equal(data.mode, "sandbox");
-  assert.deepEqual(data.providers, { bkash: false, sslcommerz: false, sms: true });
+  assert.deepEqual(data.providers, { bkash: false, nagad: false, sslcommerz: false, sms: true });
 });
 
 test("lists every tool", async () => {
@@ -75,6 +77,8 @@ test("lists every tool", async () => {
     "bkash_get_payment",
     "bkash_refund",
     "connector_status",
+    "nagad_create_payment",
+    "nagad_get_payment",
     "sms_balance",
     "sms_send",
     "sslcommerz_create_payment",
@@ -258,4 +262,134 @@ test("number normalization", () => {
   assert.equal(normalizeNumber("+88 017-1234-5678"), "8801712345678");
   assert.throws(() => normalizeNumber("0171234567"));
   assert.throws(() => normalizeNumber("01212345678"));
+});
+
+// Nagad: a fake Nagad server holding its own key pair, talking to a merchant with another.
+function nagadKeys() {
+  const pair = () =>
+    generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+  const merchant = pair();
+  const nagad = pair();
+  return { merchant, nagad };
+}
+
+function nagadEnv(keys: ReturnType<typeof nagadKeys>, extra: Record<string, string> = {}) {
+  return {
+    NAGAD_MERCHANT_ID: "683002007104225",
+    NAGAD_MERCHANT_NUMBER: "01700000000",
+    // The merchant portal gives bare base64; accept that form.
+    NAGAD_MERCHANT_PRIVATE_KEY: keys.merchant.privateKey.replace(/-----[^-]+-----|\s/g, ""),
+    NAGAD_PUBLIC_KEY: keys.nagad.publicKey,
+    NAGAD_CALLBACK_URL: "https://example.com/nagad",
+    ...extra,
+  };
+}
+
+function fakeNagad(keys: ReturnType<typeof nagadKeys>, opts: { badSignature?: boolean } = {}) {
+  const seen: Record<string, any> = {};
+  const fn: FetchFn = async (input, init) => {
+    const url = String(input);
+    const headers = init?.headers as Record<string, string>;
+    seen.headers = headers;
+    if (url.includes("/check-out/initialize/")) {
+      const body = JSON.parse(String(init?.body));
+      const sensitive = pkcs1Decrypt(createPrivateKey(keys.nagad.privateKey), Buffer.from(body.sensitiveData, "base64")).toString();
+      seen.initUrl = url;
+      seen.initBody = body;
+      seen.initSensitive = JSON.parse(sensitive);
+      seen.initSignatureOk = createVerify("SHA256").update(sensitive).verify(keys.merchant.publicKey, Buffer.from(body.signature, "base64"));
+      const reply = JSON.stringify({ paymentReferenceId: "REF123", challenge: "NAGADCHALLENGE", acceptDateTime: body.dateTime });
+      return Response.json({
+        sensitiveData: publicEncrypt({ key: keys.merchant.publicKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(reply)).toString("base64"),
+        signature: opts.badSignature ? "AAAA" : createSign("SHA256").update(reply).sign(keys.nagad.privateKey, "base64"),
+      });
+    }
+    if (url.includes("/check-out/complete/")) {
+      const body = JSON.parse(String(init?.body));
+      seen.completeUrl = url;
+      seen.completeBody = body;
+      seen.completeSensitive = JSON.parse(
+        pkcs1Decrypt(createPrivateKey(keys.nagad.privateKey), Buffer.from(body.sensitiveData, "base64")).toString(),
+      );
+      return Response.json({ status: "Success", callBackUrl: "http://sandbox.mynagad.com:10707/check-out/MDYyODAwNTQyMTZ" });
+    }
+    if (url.includes("/verify/payment/")) {
+      seen.verifyUrl = url;
+      return Response.json({ status: "Success", orderId: "ORD1", paymentRefId: "REF123", amount: "10", issuerPaymentRefNo: "7XAB12", clientMobileNo: "017****0000" });
+    }
+    return new Response("not found", { status: 404 });
+  };
+  return { fn, seen };
+}
+
+async function connectNagad(env: Record<string, string>, fetchFn: FetchFn) {
+  const server = createServer(loadConfig(env), fetchFn);
+  const client = new Client({ name: "test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a), client.connect(b)]);
+  return async (name: string, args: Record<string, unknown> = {}) => {
+    const result = (await client.callTool({ name, arguments: args })) as { content: { text: string }[]; isError?: boolean };
+    const text = result.content[0].text;
+    return { isError: Boolean(result.isError), text, data: result.isError ? undefined : JSON.parse(text) };
+  };
+}
+
+test("Nagad create payment runs the encrypted, signed two-step checkout", async () => {
+  const keys = nagadKeys();
+  const nagad = fakeNagad(keys);
+  const call = await connectNagad(nagadEnv(keys), nagad.fn);
+  const result = await call("nagad_create_payment", { amount: 10, order_id: "ORD1" });
+  assert.equal(result.isError, false, result.text);
+  assert.equal(result.data.paymentRefId, "REF123");
+  assert.match(result.data.paymentUrl, /sandbox\.mynagad\.com/);
+
+  assert.equal(nagad.seen.initUrl, "http://sandbox.mynagad.com/remote-payment-gateway/api/dfs/check-out/initialize/683002007104225/ORD1");
+  assert.equal(nagad.seen.initSignatureOk, true);
+  assert.equal(nagad.seen.initBody.accountNumber, "01700000000");
+  assert.match(nagad.seen.initBody.dateTime, /^\d{14}$/);
+  assert.equal(nagad.seen.initSensitive.datetime, nagad.seen.initBody.dateTime);
+  assert.equal(nagad.seen.initSensitive.orderId, "ORD1");
+  assert.equal(nagad.seen.headers["X-KM-Api-Version"], "v-0.2.0");
+
+  assert.equal(nagad.seen.completeUrl, "http://sandbox.mynagad.com/remote-payment-gateway/api/dfs/check-out/complete/REF123");
+  assert.deepEqual(nagad.seen.completeSensitive, {
+    merchantId: "683002007104225",
+    orderId: "ORD1",
+    amount: "10",
+    currencyCode: "050",
+    challenge: "NAGADCHALLENGE",
+  });
+  assert.equal(nagad.seen.completeBody.merchantCallbackURL, "https://example.com/nagad");
+});
+
+test("Nagad rejects a reply whose signature does not verify", async () => {
+  const keys = nagadKeys();
+  const call = await connectNagad(nagadEnv(keys), fakeNagad(keys, { badSignature: true }).fn);
+  const result = await call("nagad_create_payment", { amount: 10, order_id: "ORD1" });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /signature did not verify/);
+});
+
+test("Nagad verify reports a paid payment, on the live host in live mode", async () => {
+  const keys = nagadKeys();
+  const nagad = fakeNagad(keys);
+  const call = await connectNagad(nagadEnv(keys, { BD_CONNECTOR_MODE: "live" }), nagad.fn);
+  const result = await call("nagad_get_payment", { payment_ref_id: "REF123" });
+  assert.equal(result.data.paid, true);
+  assert.equal(result.data.transactionId, "7XAB12");
+  assert.equal(nagad.seen.verifyUrl, "https://api.mynagad.com/api/dfs/verify/payment/REF123");
+});
+
+test("a bad Nagad key is reported when a Nagad tool is used", async () => {
+  const keys = nagadKeys();
+  const call = await connectNagad(nagadEnv(keys, { NAGAD_PUBLIC_KEY: "not-a-key" }), fakeNagad(keys).fn);
+  const status = await call("connector_status");
+  assert.equal(status.isError, false);
+  const result = await call("nagad_get_payment", { payment_ref_id: "REF123" });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /could not read the public key/);
 });

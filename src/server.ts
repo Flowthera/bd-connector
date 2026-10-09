@@ -1,0 +1,229 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import type { Config } from "./config.js";
+import { ProviderError, type FetchFn } from "./http.js";
+import { Bkash } from "./providers/bkash.js";
+import { BulkSmsBd } from "./providers/bulksmsbd.js";
+import { Sslcommerz } from "./providers/sslcommerz.js";
+
+export const VERSION = "0.1.0";
+
+type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+
+async function run(task: () => Promise<unknown>): Promise<ToolResult> {
+  try {
+    const result = await task();
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  } catch (error) {
+    const message = error instanceof ProviderError || error instanceof Error ? error.message : String(error);
+    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+  }
+}
+
+function notConfigured(provider: string, vars: string): never {
+  throw new ProviderError(provider, `not configured. Set ${vars} in the connector's environment.`, "not_configured");
+}
+
+const MONEY_NOTE = " In live mode this moves real money.";
+
+export function createServer(config: Config, fetchFn: FetchFn = fetch): McpServer {
+  const server = new McpServer({ name: "flowthera-bd-connector", version: VERSION });
+  const { mode, timeoutMs } = config;
+  const bkash = config.bkash && new Bkash(config.bkash, mode, timeoutMs, fetchFn);
+  const ssl = config.sslcommerz && new Sslcommerz(config.sslcommerz, mode, timeoutMs, fetchFn);
+  const sms = config.bulksmsbd && new BulkSmsBd(config.bulksmsbd, mode, timeoutMs, fetchFn);
+
+  const needBkash = () => bkash || notConfigured("bKash", "BKASH_APP_KEY, BKASH_APP_SECRET, BKASH_USERNAME and BKASH_PASSWORD");
+  const needSsl = () => ssl || notConfigured("SSLCommerz", "SSLCOMMERZ_STORE_ID and SSLCOMMERZ_STORE_PASSWORD");
+  const needSms = () => sms || notConfigured("SMS", "BULKSMSBD_API_KEY (and BULKSMSBD_SENDER_ID to send)");
+
+  server.registerTool(
+    "connector_status",
+    {
+      title: "Connector status",
+      description: "Shows whether the connector is in sandbox or live mode and which providers are configured.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () =>
+      run(async () => ({
+        version: VERSION,
+        mode,
+        providers: { bkash: Boolean(bkash), sslcommerz: Boolean(ssl), sms: Boolean(sms) },
+        note: mode === "sandbox" ? "Sandbox mode: payments use test gateways and SMS are not sent." : "Live mode: real money and real SMS.",
+      })),
+  );
+
+  // bKash
+  server.registerTool(
+    "bkash_create_payment",
+    {
+      title: "bKash: create payment",
+      description: "Starts a bKash payment and returns a link where the customer approves it. After approval, call bkash_execute_payment.",
+      inputSchema: {
+        amount: z.number().positive().describe("Amount in BDT, e.g. 500 or 99.50"),
+        invoice_number: z.string().min(1).max(255).describe("Your unique order or invoice number"),
+        payer_reference: z.string().max(255).optional().describe("Optional customer reference, such as a phone number"),
+        callback_url: z.string().url().optional().describe("Where bKash sends the customer afterwards. Defaults to BKASH_CALLBACK_URL"),
+      },
+    },
+    (args) =>
+      run(() =>
+        needBkash().createPayment({
+          amount: args.amount,
+          invoiceNumber: args.invoice_number,
+          payerReference: args.payer_reference,
+          callbackUrl: args.callback_url,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "bkash_execute_payment",
+    {
+      title: "bKash: complete payment",
+      description: "Completes a bKash payment the customer has approved. Call once per payment." + MONEY_NOTE,
+      inputSchema: { payment_id: z.string().min(1).describe("paymentId from bkash_create_payment") },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    (args) => run(() => needBkash().executePayment(args.payment_id)),
+  );
+
+  server.registerTool(
+    "bkash_get_payment",
+    {
+      title: "bKash: payment status",
+      description: "Looks up the current status of a bKash payment.",
+      inputSchema: { payment_id: z.string().min(1) },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => run(() => needBkash().getPayment(args.payment_id)),
+  );
+
+  server.registerTool(
+    "bkash_refund",
+    {
+      title: "bKash: refund",
+      description: "Refunds all or part of a completed bKash payment. Leave amount empty for a full refund." + MONEY_NOTE,
+      inputSchema: {
+        payment_id: z.string().min(1),
+        trx_id: z.string().min(1).describe("trxId of the completed payment"),
+        amount: z.number().positive().optional().describe("Amount in BDT. Omit for the full refundable amount"),
+        reason: z.string().max(255).optional(),
+      },
+      annotations: { destructiveHint: true },
+    },
+    (args) =>
+      run(() =>
+        needBkash().refund({ paymentId: args.payment_id, trxId: args.trx_id, amount: args.amount, reason: args.reason }),
+      ),
+  );
+
+  // SSLCommerz
+  server.registerTool(
+    "sslcommerz_create_payment",
+    {
+      title: "SSLCommerz: create payment",
+      description: "Opens an SSLCommerz checkout (cards, mobile banking, net banking) and returns the payment link for the customer.",
+      inputSchema: {
+        amount: z.number().min(10).describe("Amount in BDT (SSLCommerz minimum is 10)"),
+        tran_id: z.string().min(1).max(30).describe("Your unique transaction or order id"),
+        product_name: z.string().min(1),
+        customer_name: z.string().min(1),
+        customer_phone: z.string().min(1),
+        customer_email: z.string().email().optional(),
+        customer_address: z.string().optional(),
+        customer_city: z.string().optional(),
+        success_url: z.string().url().optional().describe("Defaults to SSLCOMMERZ_SUCCESS_URL"),
+        fail_url: z.string().url().optional(),
+        cancel_url: z.string().url().optional(),
+      },
+    },
+    (args) =>
+      run(() =>
+        needSsl().createSession({
+          amount: args.amount,
+          tranId: args.tran_id,
+          productName: args.product_name,
+          customerName: args.customer_name,
+          customerPhone: args.customer_phone,
+          customerEmail: args.customer_email,
+          customerAddress: args.customer_address,
+          customerCity: args.customer_city,
+          successUrl: args.success_url,
+          failUrl: args.fail_url,
+          cancelUrl: args.cancel_url,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "sslcommerz_get_payment",
+    {
+      title: "SSLCommerz: payment status",
+      description: "Looks up an SSLCommerz payment by your transaction id and lists every attempt with its status.",
+      inputSchema: { tran_id: z.string().min(1) },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => run(() => needSsl().getPayment(args.tran_id)),
+  );
+
+  server.registerTool(
+    "sslcommerz_refund",
+    {
+      title: "SSLCommerz: refund",
+      description: "Requests a refund for an SSLCommerz payment." + MONEY_NOTE,
+      inputSchema: {
+        bank_tran_id: z.string().min(1).describe("bankTranId from sslcommerz_get_payment"),
+        amount: z.number().positive(),
+        remarks: z.string().min(1).max(255),
+        reference_id: z.string().optional().describe("Your own reference for this refund"),
+      },
+      annotations: { destructiveHint: true },
+    },
+    (args) =>
+      run(() =>
+        needSsl().refund({ bankTranId: args.bank_tran_id, amount: args.amount, remarks: args.remarks, referenceId: args.reference_id }),
+      ),
+  );
+
+  server.registerTool(
+    "sslcommerz_get_refund",
+    {
+      title: "SSLCommerz: refund status",
+      description: "Checks the status of an SSLCommerz refund.",
+      inputSchema: { refund_ref_id: z.string().min(1) },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => run(() => needSsl().getRefund(args.refund_ref_id)),
+  );
+
+  // SMS
+  server.registerTool(
+    "sms_send",
+    {
+      title: "SMS: send",
+      description:
+        "Sends an SMS to one or more Bangladeshi mobile numbers through BulkSMSBD. In sandbox mode nothing is sent. In live mode this uses SMS balance.",
+      inputSchema: {
+        numbers: z.array(z.string().min(1)).min(1).max(100).describe("Numbers like 01712345678 or +8801712345678"),
+        message: z.string().min(1).max(1000),
+      },
+      annotations: { destructiveHint: true, openWorldHint: true },
+    },
+    (args) => run(() => needSms().send(args.numbers, args.message)),
+  );
+
+  server.registerTool(
+    "sms_balance",
+    {
+      title: "SMS: balance",
+      description: "Shows the remaining BulkSMSBD balance in BDT.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () => run(() => needSms().balance()),
+  );
+
+  return server;
+}

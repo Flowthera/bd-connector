@@ -1,19 +1,41 @@
 {
   "name": "@flowthera/bd-connector",
   "version": "0.1.0",
-  "description": "Open-source MCP connector for Bangladeshi payments and SMS (bKash, SSLCommerz, SMS) for Claude and other AI agents.",
+  "description": "Free, open-source MCP connector for Bangladeshi payments and SMS (bKash, SSLCommerz, BulkSMSBD) for Claude and other AI agents.",
   "license": "MIT",
   "author": "Flowthera Infotech <ask@flowthera.com> (https://flowthera.com)",
   "type": "module",
-  "bin": { "bd-connector": "dist/index.js" },
-  "files": ["dist", "README.md", "LICENSE"],
+  "bin": {
+    "bd-connector": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "!dist/test",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "prepublishOnly": "npm test"
   },
-  "engines": { "node": ">=18" },
-  "keywords": ["mcp", "claude", "bkash", "sslcommerz", "nagad", "sms", "bangladesh", "payments", "ai-agents"],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "bkash",
+    "sslcommerz",
+    "sms",
+    "bulksmsbd",
+    "bangladesh",
+    "payments",
+    "ai-agents"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^4.6.5"
@@ -21,5 +43,13 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Flowthera/bd-connector.git"
+  },
+  "homepage": "https://github.com/Flowthera/bd-connector#readme",
+  "bugs": {
+    "url": "https://github.com/Flowthera/bd-connector/issues"
   }
 }

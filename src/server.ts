@@ -1,13 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Config } from "./config.js";
+import { BdConnector } from "./connector.js";
 import { ProviderError, type FetchFn } from "./http.js";
-import { Bkash } from "./providers/bkash.js";
-import { BulkSmsBd } from "./providers/bulksmsbd.js";
-import { Nagad } from "./providers/nagad.js";
-import { Sslcommerz } from "./providers/sslcommerz.js";
+import { MemoryStore } from "./store.js";
+import { PROVIDERS } from "./types.js";
+import { summarize } from "./web.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -27,27 +27,16 @@ function notConfigured(provider: string, vars: string): never {
 
 const MONEY_NOTE = " In live mode this moves real money.";
 
-export function createServer(config: Config, fetchFn: FetchFn = fetch): McpServer {
+export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fetch): McpServer {
+  const bd = source instanceof BdConnector ? source : new BdConnector({ config: source, fetch: fetchFn, store: new MemoryStore() });
+  const config = bd.config;
   const server = new McpServer({ name: "flowthera-bd-connector", version: VERSION });
-  const { mode, timeoutMs } = config;
-  const bkash = config.bkash && new Bkash(config.bkash, mode, timeoutMs, fetchFn);
-  const ssl = config.sslcommerz && new Sslcommerz(config.sslcommerz, mode, timeoutMs, fetchFn);
-  const sms = config.bulksmsbd && new BulkSmsBd(config.bulksmsbd, mode, timeoutMs, fetchFn);
-  // Nagad keys are parsed up front; a bad key is reported when a Nagad tool is used, not at startup.
-  let nagad: Nagad | undefined;
-  let nagadError: unknown;
-  try {
-    nagad = config.nagad && new Nagad(config.nagad, mode, timeoutMs, fetchFn);
-  } catch (error) {
-    nagadError = error;
-  }
+  const { mode } = config;
+  const { bkash, sslcommerz: ssl, sms } = bd;
 
   const needBkash = () => bkash || notConfigured("bKash", "BKASH_APP_KEY, BKASH_APP_SECRET, BKASH_USERNAME and BKASH_PASSWORD");
   const needSsl = () => ssl || notConfigured("SSLCommerz", "SSLCOMMERZ_STORE_ID and SSLCOMMERZ_STORE_PASSWORD");
-  const needNagad = () => {
-    if (nagadError) throw nagadError;
-    return nagad || notConfigured("Nagad", "NAGAD_MERCHANT_ID, NAGAD_MERCHANT_NUMBER, NAGAD_MERCHANT_PRIVATE_KEY and NAGAD_PUBLIC_KEY");
-  };
+  const needNagad = () => bd.nagad || notConfigured("Nagad", "NAGAD_MERCHANT_ID, NAGAD_MERCHANT_NUMBER, NAGAD_MERCHANT_PRIVATE_KEY and NAGAD_PUBLIC_KEY");
   const needSms = () => sms || notConfigured("SMS", "BULKSMSBD_API_KEY (and BULKSMSBD_SENDER_ID to send)");
 
   server.registerTool(
@@ -62,9 +51,95 @@ export function createServer(config: Config, fetchFn: FetchFn = fetch): McpServe
       run(async () => ({
         version: VERSION,
         mode,
-        providers: { bkash: Boolean(bkash), nagad: Boolean(config.nagad), sslcommerz: Boolean(ssl), sms: Boolean(sms) },
+        providers: {
+          bkash: Boolean(bkash),
+          nagad: Boolean(config.nagad),
+          sslcommerz: Boolean(ssl),
+          shurjopay: Boolean(bd.shurjopay),
+          aamarpay: Boolean(bd.aamarpay),
+          sms: Boolean(sms),
+        },
+        paymentSystem: {
+          publicUrl: config.system.publicUrl ?? null,
+          webhook: Boolean(config.system.webhookUrl),
+          smsToCustomer: Boolean(sms) && config.system.smsNotifyCustomer,
+          smsToOwner: config.system.smsOwnerNumbers.length,
+        },
         note: mode === "sandbox" ? "Sandbox mode: payments use test gateways and SMS are not sent." : "Live mode: real money and real SMS.",
       })),
+  );
+
+  // One flow for every gateway
+  server.registerTool(
+    "payment_create",
+    {
+      title: "Create a payment (any gateway)",
+      description:
+        "Starts a payment with any set-up gateway and returns a paymentUrl for the customer. The connector's server confirms the result when the customer returns, then sends the webhook and SMS. Needs BD_CONNECTOR_PUBLIC_URL pointing at a running `bd-connector serve`.",
+      inputSchema: {
+        provider: z.enum(PROVIDERS).describe("bkash, nagad, sslcommerz (cards and wallets), shurjopay or aamarpay (Rocket, Upay and more)"),
+        amount: z.number().positive().describe("Amount in BDT"),
+        customer_name: z.string().min(1),
+        customer_phone: z.string().min(1).describe("Bangladeshi mobile number; gets the receipt SMS"),
+        customer_email: z.string().email().optional(),
+        description: z.string().max(200).optional().describe("What the payment is for"),
+        reference: z.string().max(100).optional().describe("Your own order or invoice number"),
+      },
+    },
+    (args) =>
+      run(() =>
+        bd.createPayment({
+          provider: args.provider,
+          amount: args.amount,
+          customer: { name: args.customer_name, phone: args.customer_phone, email: args.customer_email },
+          description: args.description,
+          reference: args.reference,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "payment_check",
+    {
+      title: "Check a payment",
+      description: "Asks the gateway for the latest result of a payment made with payment_create and returns the full record (status, amount, customer, transaction ID).",
+      inputSchema: { order_id: z.string().min(1) },
+    },
+    (args) => run(() => bd.verifyPayment(args.order_id)),
+  );
+
+  server.registerTool(
+    "payments_list",
+    {
+      title: "List payments",
+      description: "Lists recorded payments, newest first, with totals. Filter by status or search by order, name, phone or transaction ID.",
+      inputSchema: {
+        status: z.enum(["pending", "success", "failed", "cancelled", "refunded"]).optional(),
+        search: z.string().optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (args) =>
+      run(async () => {
+        const payments = await bd.listPayments({ status: args.status, search: args.search, limit: args.limit ?? 50 });
+        return { summary: summarize(await bd.listPayments({ limit: 1_000_000 })), payments };
+      }),
+  );
+
+  server.registerTool(
+    "payment_refund",
+    {
+      title: "Refund a payment",
+      description: "Refunds a successful bKash or SSLCommerz payment by order id. Leave amount empty for the full amount." + MONEY_NOTE,
+      inputSchema: {
+        order_id: z.string().min(1),
+        amount: z.number().positive().optional(),
+        reason: z.string().max(255).optional(),
+      },
+      annotations: { destructiveHint: true },
+    },
+    (args) => run(() => bd.refundPayment(args.order_id, args.amount, args.reason)),
   );
 
   // bKash
@@ -235,6 +310,90 @@ export function createServer(config: Config, fetchFn: FetchFn = fetch): McpServe
       annotations: { readOnlyHint: true },
     },
     (args) => run(() => needSsl().getRefund(args.refund_ref_id)),
+  );
+
+  // shurjoPay and aamarPay: one checkout for Rocket, Upay, bKash, Nagad and cards
+  const needShurjopay = () => bd.shurjopay || notConfigured("shurjoPay", "SHURJOPAY_USERNAME and SHURJOPAY_PASSWORD");
+  const needAamarpay = () => bd.aamarpay || notConfigured("aamarPay", "AAMARPAY_STORE_ID and AAMARPAY_SIGNATURE_KEY");
+
+  server.registerTool(
+    "shurjopay_create_payment",
+    {
+      title: "shurjoPay: create payment",
+      description: "Opens a shurjoPay checkout (Rocket, Upay, bKash, Nagad, cards) and returns the payment link. Confirm afterwards with shurjopay_get_payment.",
+      inputSchema: {
+        amount: z.number().positive(),
+        order_id: z.string().min(1).max(50),
+        customer_name: z.string().min(1),
+        customer_phone: z.string().min(1),
+        customer_address: z.string().optional(),
+        customer_city: z.string().optional(),
+        return_url: z.string().url().optional().describe("Defaults to SHURJOPAY_RETURN_URL"),
+      },
+    },
+    (args) =>
+      run(() =>
+        needShurjopay().createPayment({
+          amount: args.amount,
+          orderId: args.order_id,
+          customerName: args.customer_name,
+          customerPhone: args.customer_phone,
+          customerAddress: args.customer_address,
+          customerCity: args.customer_city,
+          returnUrl: args.return_url,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "shurjopay_get_payment",
+    {
+      title: "shurjoPay: payment status",
+      description: "Asks shurjoPay whether a payment succeeded.",
+      inputSchema: { sp_order_id: z.string().min(1).describe("spOrderId from shurjopay_create_payment") },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => run(() => needShurjopay().getPayment(args.sp_order_id)),
+  );
+
+  server.registerTool(
+    "aamarpay_create_payment",
+    {
+      title: "aamarPay: create payment",
+      description: "Opens an aamarPay checkout (Rocket, Upay, bKash, Nagad, cards) and returns the payment link. Confirm afterwards with aamarpay_get_payment.",
+      inputSchema: {
+        amount: z.number().positive(),
+        order_id: z.string().min(1).max(50),
+        description: z.string().min(1).max(200),
+        customer_name: z.string().min(1),
+        customer_phone: z.string().min(1),
+        customer_email: z.string().email().optional(),
+        success_url: z.string().url().optional().describe("Defaults to AAMARPAY_SUCCESS_URL"),
+      },
+    },
+    (args) =>
+      run(() =>
+        needAamarpay().createPayment({
+          amount: args.amount,
+          orderId: args.order_id,
+          description: args.description,
+          customerName: args.customer_name,
+          customerPhone: args.customer_phone,
+          customerEmail: args.customer_email,
+          successUrl: args.success_url,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "aamarpay_get_payment",
+    {
+      title: "aamarPay: payment status",
+      description: "Asks aamarPay whether a payment succeeded, by your order id.",
+      inputSchema: { order_id: z.string().min(1) },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => run(() => needAamarpay().getPayment(args.order_id)),
   );
 
   // SMS

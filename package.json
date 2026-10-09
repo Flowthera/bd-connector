@@ -1,16 +1,27 @@
 {
   "name": "@flowthera/bd-connector",
-  "version": "0.2.0",
-  "description": "Free, open-source MCP connector for Bangladeshi payments and SMS (bKash, SSLCommerz, BulkSMSBD) for Claude and other AI agents.",
+  "version": "0.3.0",
+  "description": "Free, open-source payment and SMS system for Bangladesh (bKash, Nagad, SSLCommerz, shurjoPay, aamarPay, BulkSMSBD) for Node.js, Claude and other AI agents.",
   "license": "MIT",
   "author": "Flowthera Infotech <ask@flowthera.com> (https://flowthera.com)",
   "type": "module",
+  "main": "dist/lib.js",
+  "types": "dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "bd-connector": "dist/index.js"
   },
   "files": [
     "dist",
     "!dist/test",
+    "docs",
+    "examples",
     "README.md",
     "LICENSE",
     ".env.example"
@@ -18,8 +29,11 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "serve": "node dist/index.js serve",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "prepublishOnly": "npm test"
+    "prepare": "tsc",
+    "prepublishOnly": "npm test",
+    "check": "node dist/index.js check"
   },
   "engines": {
     "node": ">=20"
@@ -34,7 +48,14 @@
     "bulksmsbd",
     "bangladesh",
     "payments",
-    "ai-agents"
+    "ai-agents",
+    "nagad",
+    "shurjopay",
+    "aamarpay",
+    "rocket",
+    "upay",
+    "payment-gateway",
+    "webhook"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

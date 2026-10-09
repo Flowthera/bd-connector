@@ -4,9 +4,9 @@ Free, open-source [MCP](https://modelcontextprotocol.io) connector that lets Cla
 
 **Website:** https://bd-connector-flowthera.new-website.workers.dev/products/bd-connector/
 
-Ask your agent things like *"Create a bKash payment link for ৳500 for invoice INV-1042"*, *"Has order T-88 been paid on SSLCommerz?"* or *"Text the customer that their order has shipped."*
+Ask your agent things like *"Create a bKash payment link for ৳500 for invoice INV-1042"*, *"Make a Nagad payment link for order 2201"*, *"Has order T-88 been paid on SSLCommerz?"* or *"Text the customer that their order has shipped."*
 
-> **Sandbox by default.** Out of the box it talks only to the bKash and SSLCommerz test gateways and never sends SMS. Nothing moves real money until you set `BD_CONNECTOR_MODE=live` with your own merchant credentials.
+> **Sandbox by default.** Out of the box it talks only to the bKash, Nagad and SSLCommerz test gateways and never sends SMS. Nothing moves real money until you set `BD_CONNECTOR_MODE=live` with your own merchant credentials.
 
 ## Tools
 
@@ -17,6 +17,8 @@ Ask your agent things like *"Create a bKash payment link for ৳500 for invoice 
 | | `bkash_execute_payment` | Completes the payment after the customer approves |
 | | `bkash_get_payment` | Looks up a payment's status |
 | | `bkash_refund` | Full or partial refund |
+| Nagad | `nagad_create_payment` | Starts a payment and returns the link where the customer pays |
+| | `nagad_get_payment` | Confirms with Nagad whether the payment succeeded |
 | SSLCommerz | `sslcommerz_create_payment` | Opens a hosted checkout (cards, mobile banking, net banking) |
 | | `sslcommerz_get_payment` | Looks up a payment by your transaction id |
 | | `sslcommerz_refund` | Requests a refund |
@@ -24,7 +26,7 @@ Ask your agent things like *"Create a bKash payment link for ৳500 for invoice 
 | BulkSMSBD | `sms_send` | Sends an SMS to one or more numbers (dry run in sandbox mode) |
 | | `sms_balance` | Shows the remaining SMS balance |
 
-Nagad is planned next.
+Nagad refunds aren't included yet.
 
 ## Install
 
@@ -54,6 +56,11 @@ Open **Settings → Developer → Edit Config** and add the connector to `claude
         "BKASH_USERNAME": "...",
         "BKASH_PASSWORD": "...",
         "BKASH_CALLBACK_URL": "https://your-site.com/payment/done",
+        "NAGAD_MERCHANT_ID": "...",
+        "NAGAD_MERCHANT_NUMBER": "01XXXXXXXXX",
+        "NAGAD_MERCHANT_PRIVATE_KEY": "...",
+        "NAGAD_PUBLIC_KEY": "...",
+        "NAGAD_CALLBACK_URL": "https://your-site.com/payment/done",
         "SSLCOMMERZ_STORE_ID": "...",
         "SSLCOMMERZ_STORE_PASSWORD": "...",
         "SSLCOMMERZ_SUCCESS_URL": "https://your-site.com/payment/done",
@@ -83,13 +90,14 @@ Every setting is listed in [`.env.example`](.env.example).
 
 - **SSLCommerz:** register a free sandbox store at [developer.sslcommerz.com](https://developer.sslcommerz.com/registration/). Your store id and password arrive by email.
 - **bKash:** sandbox credentials for Tokenized Checkout come from bKash's developer portal or your bKash merchant contact. In the sandbox, approve payments with OTP `123456` and PIN `12121`.
+- **Nagad:** sandbox access comes from Nagad's merchant team when you apply for the payment gateway. They give you a merchant ID and Nagad's public key; you create your own key pair and register the public half with them. Keys can be pasted as PEM or as the bare base64 the portal shows.
 - **BulkSMSBD:** create an account at [bulksmsbd.net](https://bulksmsbd.net) for an API key and sender ID. In sandbox mode `sms_send` never calls the gateway, so you can try it without credit.
 
 ## How a payment works
 
-1. The agent calls `bkash_create_payment` or `sslcommerz_create_payment` and gets a `paymentUrl`.
+1. The agent calls `bkash_create_payment`, `nagad_create_payment` or `sslcommerz_create_payment` and gets a `paymentUrl`.
 2. The customer opens the link and pays.
-3. For bKash, the agent calls `bkash_execute_payment` to complete it. For SSLCommerz, it calls `sslcommerz_get_payment` to confirm.
+3. For bKash, the agent calls `bkash_execute_payment` to complete it. For Nagad and SSLCommerz, it calls `nagad_get_payment` or `sslcommerz_get_payment` to confirm.
 
 Tools that move money or send SMS are marked as destructive, so clients like Claude ask before running them.
 

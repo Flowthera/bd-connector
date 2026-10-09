@@ -4,9 +4,10 @@ import type { Config } from "./config.js";
 import { ProviderError, type FetchFn } from "./http.js";
 import { Bkash } from "./providers/bkash.js";
 import { BulkSmsBd } from "./providers/bulksmsbd.js";
+import { Nagad } from "./providers/nagad.js";
 import { Sslcommerz } from "./providers/sslcommerz.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -32,9 +33,21 @@ export function createServer(config: Config, fetchFn: FetchFn = fetch): McpServe
   const bkash = config.bkash && new Bkash(config.bkash, mode, timeoutMs, fetchFn);
   const ssl = config.sslcommerz && new Sslcommerz(config.sslcommerz, mode, timeoutMs, fetchFn);
   const sms = config.bulksmsbd && new BulkSmsBd(config.bulksmsbd, mode, timeoutMs, fetchFn);
+  // Nagad keys are parsed up front; a bad key is reported when a Nagad tool is used, not at startup.
+  let nagad: Nagad | undefined;
+  let nagadError: unknown;
+  try {
+    nagad = config.nagad && new Nagad(config.nagad, mode, timeoutMs, fetchFn);
+  } catch (error) {
+    nagadError = error;
+  }
 
   const needBkash = () => bkash || notConfigured("bKash", "BKASH_APP_KEY, BKASH_APP_SECRET, BKASH_USERNAME and BKASH_PASSWORD");
   const needSsl = () => ssl || notConfigured("SSLCommerz", "SSLCOMMERZ_STORE_ID and SSLCOMMERZ_STORE_PASSWORD");
+  const needNagad = () => {
+    if (nagadError) throw nagadError;
+    return nagad || notConfigured("Nagad", "NAGAD_MERCHANT_ID, NAGAD_MERCHANT_NUMBER, NAGAD_MERCHANT_PRIVATE_KEY and NAGAD_PUBLIC_KEY");
+  };
   const needSms = () => sms || notConfigured("SMS", "BULKSMSBD_API_KEY (and BULKSMSBD_SENDER_ID to send)");
 
   server.registerTool(
@@ -49,7 +62,7 @@ export function createServer(config: Config, fetchFn: FetchFn = fetch): McpServe
       run(async () => ({
         version: VERSION,
         mode,
-        providers: { bkash: Boolean(bkash), sslcommerz: Boolean(ssl), sms: Boolean(sms) },
+        providers: { bkash: Boolean(bkash), nagad: Boolean(config.nagad), sslcommerz: Boolean(ssl), sms: Boolean(sms) },
         note: mode === "sandbox" ? "Sandbox mode: payments use test gateways and SMS are not sent." : "Live mode: real money and real SMS.",
       })),
   );
@@ -117,6 +130,32 @@ export function createServer(config: Config, fetchFn: FetchFn = fetch): McpServe
       run(() =>
         needBkash().refund({ paymentId: args.payment_id, trxId: args.trx_id, amount: args.amount, reason: args.reason }),
       ),
+  );
+
+  // Nagad
+  server.registerTool(
+    "nagad_create_payment",
+    {
+      title: "Nagad: create payment",
+      description: "Starts a Nagad payment and returns the link where the customer pays. Confirm afterwards with nagad_get_payment.",
+      inputSchema: {
+        amount: z.number().positive().describe("Amount in BDT"),
+        order_id: z.string().regex(/^[A-Za-z0-9]{1,20}$/).describe("Your unique order id: 1-20 letters or digits"),
+        callback_url: z.string().url().optional().describe("Where Nagad sends the customer afterwards. Defaults to NAGAD_CALLBACK_URL"),
+      },
+    },
+    (args) => run(() => needNagad().createPayment({ amount: args.amount, orderId: args.order_id, callbackUrl: args.callback_url })),
+  );
+
+  server.registerTool(
+    "nagad_get_payment",
+    {
+      title: "Nagad: payment status",
+      description: "Asks Nagad whether a payment succeeded. This is the reliable check; don't trust the customer's redirect alone.",
+      inputSchema: { payment_ref_id: z.string().min(1).describe("paymentRefId from nagad_create_payment") },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => run(() => needNagad().getPayment(args.payment_ref_id)),
   );
 
   // SSLCommerz

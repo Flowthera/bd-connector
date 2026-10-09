@@ -17,6 +17,13 @@ export interface Config {
     failUrl?: string;
     cancelUrl?: string;
   };
+  nagad?: {
+    merchantId: string;
+    merchantNumber: string;
+    merchantPrivateKey: string;
+    nagadPublicKey: string;
+    callbackUrl?: string;
+  };
   bulksmsbd?: {
     apiKey: string;
     senderId?: string;
@@ -51,6 +58,20 @@ export function loadConfig(env: Env = process.env): Config {
       successUrl: nonEmpty(env.SSLCOMMERZ_SUCCESS_URL),
       failUrl: nonEmpty(env.SSLCOMMERZ_FAIL_URL),
       cancelUrl: nonEmpty(env.SSLCOMMERZ_CANCEL_URL),
+    };
+  }
+
+  const nagadId = nonEmpty(env.NAGAD_MERCHANT_ID);
+  const nagadNumber = nonEmpty(env.NAGAD_MERCHANT_NUMBER);
+  const nagadPrivate = nonEmpty(env.NAGAD_MERCHANT_PRIVATE_KEY);
+  const nagadPublic = nonEmpty(env.NAGAD_PUBLIC_KEY);
+  if (nagadId && nagadNumber && nagadPrivate && nagadPublic) {
+    config.nagad = {
+      merchantId: nagadId,
+      merchantNumber: nagadNumber,
+      merchantPrivateKey: nagadPrivate,
+      nagadPublicKey: nagadPublic,
+      callbackUrl: nonEmpty(env.NAGAD_CALLBACK_URL),
     };
   }
 

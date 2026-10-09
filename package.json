@@ -1,6 +1,6 @@
 {
   "name": "@flowthera/bd-connector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Free, open-source MCP connector for Bangladeshi payments and SMS (bKash, SSLCommerz, BulkSMSBD) for Claude and other AI agents.",
   "license": "MIT",
   "author": "Flowthera Infotech <ask@flowthera.com> (https://flowthera.com)",

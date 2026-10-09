@@ -2,6 +2,8 @@
 
 Free, open-source [MCP](https://modelcontextprotocol.io) connector that lets Claude and other AI agents take payments and send SMS in Bangladesh.
 
+**Website:** https://bd-connector-flowthera.new-website.workers.dev/products/bd-connector/
+
 Ask your agent things like *"Create a bKash payment link for ৳500 for invoice INV-1042"*, *"Has order T-88 been paid on SSLCommerz?"* or *"Text the customer that their order has shipped."*
 
 > **Sandbox by default.** Out of the box it talks only to the bKash and SSLCommerz test gateways and never sends SMS. Nothing moves real money until you set `BD_CONNECTOR_MODE=live` with your own merchant credentials.

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { constants, createSign, createVerify, generateKeyPairSync, privateDecrypt, publicEncrypt } from "node:crypto";
+import { constants, createPrivateKey, createSign, createVerify, generateKeyPairSync, publicEncrypt } from "node:crypto";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadConfig } from "../config.js";
 import type { FetchFn } from "../http.js";
 import { normalizeNumber } from "../providers/bulksmsbd.js";
+import { pkcs1Decrypt } from "../providers/nagad.js";
 import { createServer } from "../server.js";
 
 interface Call {
@@ -296,7 +297,7 @@ function fakeNagad(keys: ReturnType<typeof nagadKeys>, opts: { badSignature?: bo
     seen.headers = headers;
     if (url.includes("/check-out/initialize/")) {
       const body = JSON.parse(String(init?.body));
-      const sensitive = privateDecrypt({ key: keys.nagad.privateKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(body.sensitiveData, "base64")).toString();
+      const sensitive = pkcs1Decrypt(createPrivateKey(keys.nagad.privateKey), Buffer.from(body.sensitiveData, "base64")).toString();
       seen.initUrl = url;
       seen.initBody = body;
       seen.initSensitive = JSON.parse(sensitive);
@@ -312,7 +313,7 @@ function fakeNagad(keys: ReturnType<typeof nagadKeys>, opts: { badSignature?: bo
       seen.completeUrl = url;
       seen.completeBody = body;
       seen.completeSensitive = JSON.parse(
-        privateDecrypt({ key: keys.nagad.privateKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(body.sensitiveData, "base64")).toString(),
+        pkcs1Decrypt(createPrivateKey(keys.nagad.privateKey), Buffer.from(body.sensitiveData, "base64")).toString(),
       );
       return Response.json({ status: "Success", callBackUrl: "http://sandbox.mynagad.com:10707/check-out/MDYyODAwNTQyMTZ" });
     }

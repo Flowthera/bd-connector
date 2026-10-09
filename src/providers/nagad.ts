@@ -28,6 +28,17 @@ export function loadKey(key: string, kind: "PRIVATE" | "PUBLIC"): KeyObject {
   }
 }
 
+/**
+ * Decrypts RSA PKCS#1 v1.5, which Nagad uses for every reply. Node 20 refuses this padding in
+ * privateDecrypt (CVE-2023-46809), so decrypt the raw block and remove the padding here.
+ */
+export function pkcs1Decrypt(key: KeyObject, ciphertext: Buffer): Buffer {
+  const block = privateDecrypt({ key, padding: constants.RSA_NO_PADDING }, ciphertext);
+  const separator = block.indexOf(0, 2);
+  if (block[0] !== 0 || block[1] !== 2 || separator < 10) throw new Error("bad padding");
+  return block.subarray(separator + 1);
+}
+
 /** Nagad timestamps are yyyyMMddHHmmss in Dhaka time. */
 export function dhakaTimestamp(now = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -81,7 +92,7 @@ export class Nagad {
     }
     let plaintext: string;
     try {
-      plaintext = privateDecrypt({ key: this.privateKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(reply.sensitiveData, "base64")).toString("utf8");
+      plaintext = pkcs1Decrypt(this.privateKey, Buffer.from(reply.sensitiveData, "base64")).toString("utf8");
     } catch {
       throw new ProviderError("Nagad", `${step}: could not read the reply; the merchant private key probably doesn't match the one registered with Nagad`, "key_mismatch");
     }

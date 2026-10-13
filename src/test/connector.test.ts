@@ -96,6 +96,21 @@ test("lists every tool", async () => {
   ]);
 });
 
+test("every tool declares all four safety hints", async () => {
+  const { client } = await connect({}, {});
+  const { tools } = await client.listTools();
+  for (const tool of tools) {
+    for (const hint of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const) {
+      assert.equal(typeof tool.annotations?.[hint], "boolean", `${tool.name} is missing ${hint}`);
+    }
+    if (tool.annotations?.readOnlyHint) assert.equal(tool.annotations.destructiveHint, false, tool.name);
+  }
+  const hints = Object.fromEntries(tools.map((t) => [t.name, t.annotations]));
+  assert.equal(hints.sms_send?.destructiveHint, true);
+  assert.equal(hints.payment_refund?.destructiveHint, true);
+  assert.equal(hints.payments_list?.readOnlyHint, true);
+});
+
 test("unconfigured provider returns a clear error", async () => {
   const { call } = await connect({}, {});
   const result = await call("bkash_get_payment", { payment_id: "x" });

@@ -1,5 +1,7 @@
 # Flowthera BD Connector
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/flowthera-bd-connector-g9g8t7?v=5eaf0c47cbc4afa5103d15e3e8d26bd0)](https://m8ven.ai/mcp/flowthera-bd-connector-g9g8t7?s=readme)
+
 Free, open-source payment and SMS system for Bangladesh. Take payments with **bKash, Nagad, Rocket, Upay, cards and net banking**, get a clear **success or failed** result with the amount, customer and transaction ID, and let your customers and yourself know by **SMS**.
 
 Use it the way that suits you:

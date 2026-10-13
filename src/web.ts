@@ -1,7 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { BdConnector, formatAmount } from "./connector.js";
+import { paymentsToCsv } from "./csv.js";
+import { EMBED_JS } from "./embed.js";
 import { ProviderError } from "./http.js";
+import { openApiSpec } from "./openapi.js";
 import { PROVIDER_LABELS, PROVIDERS, type Payment, type PaymentStatus, type Provider } from "./types.js";
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -110,6 +113,8 @@ th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertic
 dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0}dt{color:var(--muted)}dd{margin:0;word-break:break-all}
 .sandbox{background:#facc15;color:#000;text-align:center;font-size:13px;padding:4px}
 form.inline{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}form.inline input,form.inline select{width:auto;flex:1;min-width:140px}
+.btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}.copyrow{display:flex;gap:8px;align-items:flex-start}
+textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:13px/1.4 ui-monospace,Menlo,monospace;resize:vertical}
 footer{text-align:center;color:var(--muted);font-size:12px;padding:16px}a{color:var(--accent)}`;
 
 function page(title: string, body: string, mode: string, narrow = true): string {
@@ -205,12 +210,74 @@ export function createHandler(bd: BdConnector): Handler {
       <div class="card stat"><div class="muted">Waiting</div><div class="n pending">${s.byStatus.pending.count}</div></div></div>
       <div class="card"><form class="inline" method="get" action="${esc(base())}/dashboard"><input name="search" placeholder="Search order, name, phone, trx" value="${esc(q.search)}">
       <select name="status"><option value="">All statuses</option>${STATUSES.map((st) => `<option ${q.status === st ? "selected" : ""}>${st}</option>`).join("")}</select>
-      <button>Filter</button></form>
+      <button>Filter</button><a class="btn ghost" href="${esc(base())}/dashboard/export.csv?${esc(new URLSearchParams(Object.entries(q).filter(([, v]) => v)).toString())}">Download CSV</a></form>
       <div class="scroll"><table><thead><tr><th>Date</th><th>Order</th><th>Customer</th><th>Amount</th><th>Gateway</th><th>Status</th><th>Trx ID</th><th></th></tr></thead>
-      <tbody>${rows || `<tr><td colspan="8" class="muted">No payments yet.</td></tr>`}</tbody></table></div></div>`,
+      <tbody>${rows || `<tr><td colspan="8" class="muted">No payments yet.</td></tr>`}</tbody></table></div></div>
+      ${linkMaker()}`,
       bd.mode,
       false,
     );
+  }
+
+  /** A small form that builds a payment link and the one-line button code for any website. */
+  function linkMaker(): string {
+    return `<div class="card" id="links"><h2>Payment link and website button</h2>
+      <p class="muted">Share the link by SMS, WhatsApp or email, or paste the button code into any website (WordPress, Shopify, plain HTML).</p>
+      <form class="inline" id="lm" onsubmit="return false">
+        <input name="amount" type="number" min="1" step="0.01" placeholder="Amount (empty: customer types it)">
+        <input name="description" placeholder="What it's for, e.g. Invoice 42">
+        <input name="reference" placeholder="Your invoice or order number">
+        <select name="provider"><option value="">Customer chooses gateway</option>${bd.providers().map((p) => `<option value="${p}">${esc(PROVIDER_LABELS[p])}</option>`).join("")}</select>
+      </form>
+      <label for="lm-link">Payment link</label><div class="copyrow"><input id="lm-link" readonly><button class="small" type="button" data-copy="lm-link">Copy</button></div>
+      <label for="lm-code">Website button code</label><div class="copyrow"><textarea id="lm-code" rows="3" readonly></textarea><button class="small" type="button" data-copy="lm-code">Copy</button></div>
+      <p class="muted">Preview: <a id="lm-open" target="_blank" rel="noopener">open the checkout page</a></p></div>
+      <script>(function(){
+        var base = ${JSON.stringify(base())} || location.origin + location.pathname.replace(/\\/dashboard.*$/, "");
+        var form = document.getElementById("lm");
+        function esc(v){ return String(v).replace(/[&<>"]/g, function(c){ return "&#" + c.charCodeAt(0) + ";"; }); }
+        function update(){
+          var q = new URLSearchParams(), attrs = "";
+          ["amount","description","reference","provider"].forEach(function(k){
+            var v = form.elements[k].value.trim();
+            if (v) { q.set(k, v); attrs += " data-" + k + '="' + esc(v) + '"'; }
+          });
+          if (q.get("amount")) q.set("lock", "1");
+          var url = base + "/pay" + (q.toString() ? "?" + q : "");
+          document.getElementById("lm-link").value = url;
+          document.getElementById("lm-open").href = url;
+          document.getElementById("lm-code").value = '<script src="' + base + '/embed.js" defer><\\/script>\\n<button data-bd-pay' + attrs + '></button>';
+        }
+        form.addEventListener("input", update); update();
+        document.querySelectorAll("[data-copy]").forEach(function(b){ b.addEventListener("click", function(){
+          var el = document.getElementById(b.dataset.copy); el.select();
+          (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject()).catch(function(){ document.execCommand("copy"); });
+          b.textContent = "Copied"; setTimeout(function(){ b.textContent = "Copy"; }, 1500);
+        }); });
+      })();</script>`;
+  }
+
+  /** Filters by Dhaka calendar date, for exports. */
+  function inDateRange(p: Payment, from?: string | null, to?: string | null): boolean {
+    const day = new Date(p.createdAt).toLocaleDateString("en-CA", { timeZone: "Asia/Dhaka" });
+    return (!from || day >= from) && (!to || day <= to);
+  }
+
+  async function exportCsv(res: ServerResponse, q: URLSearchParams) {
+    const payments = (await bd.listPayments({
+      status: (q.get("status") as PaymentStatus) || undefined,
+      provider: q.get("provider") || undefined,
+      search: q.get("search") || undefined,
+      limit: 1_000_000,
+    })).filter((p) => inDateRange(p, q.get("from"), q.get("to")));
+    const name = `payments-${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dhaka" })}.csv`;
+    send(res, 200, paymentsToCsv(payments), "text/csv; charset=utf-8", { "Content-Disposition": `attachment; filename="${name}"` });
+  }
+
+  function docsPage(): string {
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(system.businessName)} payments API</title></head>
+      <body><div id="app"></div><script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.69.2"></script>
+      <script>Scalar.createApiReference("#app", { url: ${JSON.stringify(`${base()}/openapi.json`)}, hideClientButton: false, metaData: { title: "BD Connector API" } });</script></body></html>`;
   }
 
   function apiAuthorized(req: IncomingMessage): boolean {
@@ -231,6 +298,16 @@ export function createHandler(bd: BdConnector): Handler {
     const method = req.method ?? "GET";
 
     if (parts[0] === "health") return json(res, 200, { ok: true, mode: bd.mode, providers: bd.providers() });
+
+    // The one-line Pay button for any website, the API description and the interactive API docs.
+    if (parts[0] === "embed.js" && parts.length === 1) {
+      return send(res, 200, EMBED_JS, "text/javascript; charset=utf-8", { "Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*" });
+    }
+    if (parts[0] === "openapi.json" && parts.length === 1) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return json(res, 200, openApiSpec(system.publicUrl));
+    }
+    if (parts[0] === "docs" && parts.length === 1) return send(res, 200, docsPage());
 
     // Gateways send the customer back here. The result is confirmed with the gateway, then the
     // customer goes to your return URL or the receipt page.
@@ -274,6 +351,7 @@ export function createHandler(bd: BdConnector): Handler {
       if (!system.apiKey) return json(res, 404, { error: "The API is off. Set BD_CONNECTOR_API_KEY to turn it on." });
       if (!apiAuthorized(req)) return json(res, 401, { error: "Missing or wrong API key. Send Authorization: Bearer <BD_CONNECTOR_API_KEY>." });
       try {
+        if (parts[1] === "payments.csv" && method === "GET") return exportCsv(res, url.searchParams);
         if (parts[1] === "summary" && method === "GET") return json(res, 200, summarize(await bd.listPayments({ limit: 1_000_000 })));
         if (parts[1] === "providers" && method === "GET") return json(res, 200, { mode: bd.mode, providers: bd.providers() });
         if (parts[1] === "payments" && parts.length === 2 && method === "POST") {
@@ -309,6 +387,7 @@ export function createHandler(bd: BdConnector): Handler {
     if (parts[0] === "dashboard") {
       if (!system.dashboardPassword) return send(res, 404, "The dashboard is off. Set BD_CONNECTOR_DASHBOARD_PASSWORD to turn it on.", "text/plain");
       if (!dashboardAuthorized(req)) return send(res, 401, "Sign in with any user name and the dashboard password.", "text/plain", { "WWW-Authenticate": 'Basic realm="Payments", charset="UTF-8"' });
+      if (parts[1] === "export.csv" && method === "GET") return exportCsv(res, url.searchParams);
       if (parts[1] === "verify" && parts[2] && method === "POST") {
         const form = await readParams(req, url);
         if (!safeEqual(form.csrf ?? "", csrf)) return send(res, 403, "Bad form token", "text/plain");

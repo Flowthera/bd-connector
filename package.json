@@ -33,7 +33,8 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "prepare": "tsc",
     "prepublishOnly": "npm test",
-    "check": "node dist/index.js check"
+    "check": "node dist/index.js check",
+    "docs:build": "npm run build && node scripts/build-site.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -63,6 +64,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "marked": "^18.0.13",
     "typescript": "^7.0.2"
   },
   "repository": {

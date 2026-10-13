@@ -7,7 +7,8 @@ import { MemoryStore } from "./store.js";
 import { PROVIDERS } from "./types.js";
 import { summarize } from "./web.js";
 
-export const VERSION = "0.3.0";
+export { VERSION } from "./version.js";
+import { VERSION } from "./version.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 

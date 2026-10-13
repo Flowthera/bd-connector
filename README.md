@@ -8,12 +8,14 @@ Use it the way that suits you:
 
 | You want to... | Use | Guide |
 |---|---|---|
-| Take payments without writing code | The ready payment server: a checkout page, receipts and a dashboard | [Setup guide](docs/setup-guide.md) |
-| Add payments to your website or app (any language) | The payment server's JSON API and webhooks | [API and webhooks](docs/api.md) |
+| Take payments without writing code | The ready payment server: payment links, a checkout page, receipts and a dashboard | [Setup guide](docs/setup-guide.md) |
+| Put a Pay button on any website (WordPress, Shopify, Wix, HTML) | Two lines of code, no back end | [Add to any website](docs/website-integration.md) |
+| Connect your website, app, CRM or accounts (any language) | The JSON API, signed webhooks and CSV export | [API and webhooks](docs/api.md), [Accounts and CRM](docs/accounts-and-crm.md) |
 | Add payments inside your Node.js project | The library: `import { BdConnector } from "@flowthera/bd-connector"` | [Node.js library](docs/node-library.md) |
 | Let Claude or another AI agent take payments | The MCP connector | [Claude setup](docs/claude.md) |
 
 **Website:** https://bd-connector-flowthera.new-website.workers.dev/products/bd-connector/
+**Docs:** https://flowthera.github.io/bd-connector/
 
 > **Sandbox by default.** Out of the box it only talks to the gateways' test systems and never sends real SMS. Nothing moves real money until you set `BD_CONNECTOR_MODE=live` with your own merchant credentials.
 
@@ -61,7 +63,11 @@ Open http://localhost:8080/pay to see the checkout page. For gateways to send cu
 
 ## Docs
 
+Read them on the [docs website](https://flowthera.github.io/bd-connector/), which also has the interactive [API reference](https://flowthera.github.io/bd-connector/api-reference.html) and a [button and link maker](https://flowthera.github.io/bd-connector/button-maker.html). Every server also shows its own API reference at `/docs`, where you can send test requests.
+
 - [Setup guide](docs/setup-guide.md): from zero to your first test payment, then going live
+- [Add to any website](docs/website-integration.md): payment links, the one-line Pay button, PHP and Python examples
+- [Accounts and CRM](docs/accounts-and-crm.md): CSV export, Google Sheets, Zapier, Make and n8n
 - [Configuration](docs/configuration.md): every setting
 - [Payment data reference](docs/data-reference.md): every field, status, webhook and SMS template
 - [API and webhooks](docs/api.md): connect any website or app
@@ -81,6 +87,7 @@ Open http://localhost:8080/pay to see the checkout page. For gateways to send cu
 
 ```bash
 npm test
+npm run docs:build   # builds the docs website into site/
 ```
 
 Tests use a fake network, so they need no credentials. Contributions are welcome: open an issue or pull request.

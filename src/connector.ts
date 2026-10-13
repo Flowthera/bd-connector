@@ -484,6 +484,8 @@ export class BdConnector {
 
   private async sendWebhook(url: string, payment: Payment, event: PaymentEvent): Promise<Notification> {
     const body = JSON.stringify({ event, sentAt: now(), payment });
+    // Records only the address, never a token in its query string.
+    const to = url.split("?")[0];
     const headers: Record<string, string> = { "Content-Type": "application/json", "X-BD-Event": event, "User-Agent": "flowthera-bd-connector" };
     if (this.config.system.webhookSecret) headers["X-BD-Signature"] = signWebhook(body, this.config.system.webhookSecret);
     let error = "";
@@ -491,13 +493,13 @@ export class BdConnector {
       if (delay) await new Promise((r) => setTimeout(r, delay));
       try {
         const res = await this.fetchFn(url, { method: "POST", headers, body, signal: AbortSignal.timeout(this.config.timeoutMs) });
-        if (res.ok) return { kind: "webhook", to: url, event, ok: true, at: now() };
+        if (res.ok) return { kind: "webhook", to, event, ok: true, at: now() };
         error = `HTTP ${res.status}`;
       } catch (e) {
         error = (e as Error).message;
       }
     }
-    return { kind: "webhook", to: url, event, ok: false, error, at: now() };
+    return { kind: "webhook", to, event, ok: false, error, at: now() };
   }
 }
 

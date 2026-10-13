@@ -279,6 +279,17 @@ test("SSLCommerz attempts map to success, failed and cancelled", async () => {
   assert.equal((await bd.handleCallback("sslcommerz", c.orderId, { result: "fail" })).status, "failed");
 });
 
+test("a token in the webhook URL is never stored on the payment", async () => {
+  const { bd, calls } = make(BKASH_ROUTES, { BD_CONNECTOR_WEBHOOK_URL: "https://shop.example.com/hooks/payments?token=s3cret" });
+  const p = await bd.createPayment({ provider: "bkash", amount: 500, customer: CUSTOMER });
+  await bd.handleCallback("bkash", p.orderId, { paymentID: "PAY1", status: "success" });
+  await bd.flush();
+  assert.ok(calls.some((c) => c.url === "https://shop.example.com/hooks/payments?token=s3cret"), "posted to the full URL");
+  const stored = (await bd.getPayment(p.orderId))!;
+  assert.doesNotMatch(JSON.stringify(stored), /s3cret/);
+  assert.equal(stored.notifications.find((n) => n.kind === "webhook")!.to, "https://shop.example.com/hooks/payments");
+});
+
 test("webhook retries and records a failure", async () => {
   let tries = 0;
   const fake = fakeFetch(BKASH_ROUTES);
@@ -462,6 +473,71 @@ test("server: dashboard asks for the password and lists payments", async () => {
     const check = await fetch(`${base}/dashboard/verify/${p.orderId}`, { method: "POST", headers: auth, body: new URLSearchParams({ csrf }), redirect: "manual" });
     assert.equal(check.status, 303);
     assert.equal((await bd.getPayment(p.orderId))!.status, "success");
+  } finally {
+    await bd.flush();
+    await close();
+  }
+});
+
+test("server: embed script, OpenAPI description and API docs page are public", async () => {
+  const { bd, base, close } = await serve({}, SSL_ROUTES);
+  try {
+    const script = await fetch(`${base}/embed.js`);
+    assert.equal(script.status, 200);
+    assert.match(script.headers.get("content-type")!, /javascript/);
+    const code = await script.text();
+    assert.match(code, /data-bd-pay/);
+    assert.match(code, /window\.BDPay/);
+    new Function(code); // parses as valid JavaScript
+
+    const spec = await (await fetch(`${base}/openapi.json`)).json();
+    assert.equal(spec.openapi, "3.1.0");
+    assert.equal(spec.servers[0].url, "https://pay.example.com");
+    for (const path of ["/api/payments", "/api/payments/{orderId}", "/api/payments/{orderId}/verify", "/api/payments/{orderId}/refund", "/api/payments.csv", "/api/summary", "/health"]) {
+      assert.ok(spec.paths[path], `missing ${path}`);
+    }
+    assert.deepEqual(spec.components.schemas.CreatePayment.properties.provider.enum, ["bkash", "nagad", "sslcommerz", "shurjopay", "aamarpay"]);
+    assert.ok(spec.webhooks.paymentResult);
+
+    const docs = await (await fetch(`${base}/docs`)).text();
+    assert.match(docs, /@scalar\/api-reference@1\.69\.2/);
+    assert.match(docs, /https:\/\/pay\.example\.com\/openapi\.json/);
+  } finally {
+    await bd.flush();
+    await close();
+  }
+});
+
+test("server: CSV export for accounts, behind the API key and the dashboard password", async () => {
+  const { bd, base, close } = await serve({ BD_CONNECTOR_API_KEY: "apikey", BD_CONNECTOR_DASHBOARD_PASSWORD: "dash" }, SSL_ROUTES);
+  try {
+    const p = await bd.createPayment({ provider: "sslcommerz", amount: 300, customer: { name: '=HYPERLINK("x"), "Rahim"', phone: "01712345678" }, reference: "INV-1, 2" });
+    await bd.verifyPayment(p.orderId);
+    await bd.createPayment({ provider: "sslcommerz", amount: 50, customer: CUSTOMER });
+
+    assert.equal((await fetch(`${base}/api/payments.csv`)).status, 401);
+    const res = await fetch(`${base}/api/payments.csv?status=success`, { headers: { Authorization: "Bearer apikey" } });
+    assert.match(res.headers.get("content-type")!, /text\/csv/);
+    assert.match(res.headers.get("content-disposition")!, /attachment; filename="payments-\d{4}-\d{2}-\d{2}\.csv"/);
+    const text = await res.text();
+    const lines = text.replace(/^﻿/, "").trim().split("\r\n");
+    assert.equal(lines.length, 2, "header plus the one successful payment");
+    assert.match(lines[0], /^order_id,reference,created_at,paid_at,status,provider,method,amount,paid_amount/);
+    assert.ok(lines[1].startsWith(`${p.orderId},"INV-1, 2",`));
+    assert.match(lines[1], /,success,sslcommerz,VISA,300,300,/);
+    assert.match(lines[1], /,"'=HYPERLINK\(""x""\), ""Rahim""",01712345678,/, "formulas are neutralized and quotes escaped");
+
+    const future = await (await fetch(`${base}/api/payments.csv?from=2999-01-01`, { headers: { Authorization: "Bearer apikey" } })).text();
+    assert.equal(future.trim().split("\r\n").length, 1);
+
+    const auth = { Authorization: "Basic " + Buffer.from("o:dash").toString("base64") };
+    assert.equal((await fetch(`${base}/dashboard/export.csv`)).status, 401);
+    assert.equal((await (await fetch(`${base}/dashboard/export.csv`, { headers: auth })).text()).trim().split("\r\n").length, 3);
+    const html = await (await fetch(`${base}/dashboard`, { headers: auth })).text();
+    assert.match(html, /Download CSV/);
+    assert.match(html, /Payment link and website button/);
+    const inline = html.match(/<script>([\s\S]*?)<\/script>/)![1];
+    new Function(inline); // the link maker's script parses
   } finally {
     await bd.flush();
     await close();

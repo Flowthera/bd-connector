@@ -8,6 +8,8 @@ Turn the API on by setting `BD_CONNECTOR_API_KEY`, and send it with every reques
 Authorization: Bearer <BD_CONNECTOR_API_KEY>
 ```
 
+Every endpoint is also in the interactive [API reference](https://flowthera.github.io/bd-connector/api-reference.html). To send test requests, open the same reference on your own server at `https://<your server>/docs`, enter your API key under Authentication and press **Test Request**. The machine-readable OpenAPI description is at `/openapi.json`; Postman, Insomnia and code generators can import it.
+
 Keep the key on your server. Never put it in a web page or mobile app; call the API from your back end.
 
 ## The flow
@@ -29,9 +31,12 @@ Treat the webhook (or a `GET /api/payments/{orderId}` lookup) as the truth. The 
 | `POST /api/payments/{orderId}/verify` | Ask the gateway for the latest result and update the record |
 | `POST /api/payments/{orderId}/refund` | Refund a bKash or SSLCommerz payment |
 | `GET /api/payments` | List payments |
+| `GET /api/payments.csv` | Export as CSV for accounts ([filters](accounts-and-crm.md#csv-export)) |
 | `GET /api/summary` | Totals |
 | `GET /api/providers` | Mode and gateways that are set up |
 | `GET /health` | `{ "ok": true, ... }`, no key needed |
+| `GET /openapi.json`, `GET /docs` | API description and interactive reference, no key needed |
+| `GET /embed.js` | The [Pay button](website-integration.md#2-pay-button) script, no key needed |
 
 ### Start a payment
 

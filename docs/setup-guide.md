@@ -108,6 +108,8 @@ https://your-address/pay?amount=1500&description=Invoice%2042&reference=INV-42&l
 | `provider` | Pre-select a gateway: `bkash`, `nagad`, `sslcommerz`, `shurjopay`, `aamarpay` |
 | `name`, `phone`, `email` | Pre-fill the customer's details |
 
+The dashboard has a **Payment link and website button** maker that builds these links for you, plus a button you can paste into any website. See [Add to any website](website-integration.md).
+
 ## 7. Connect your own system (optional)
 
 - **Get told about every payment:** set `BD_CONNECTOR_WEBHOOK_URL` and `BD_CONNECTOR_WEBHOOK_SECRET`. Your system receives a signed JSON message for each success, failure, cancellation and refund. See [API and webhooks](api.md#webhooks).

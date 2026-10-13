@@ -25,6 +25,18 @@ function notConfigured(provider: string, vars: string): never {
   throw new ProviderError(provider, `not configured. Set ${vars} in the connector's environment.`, "not_configured");
 }
 
+// Every tool declares all four MCP hints, so clients and directories can tell at a glance what it does.
+const LOCAL_READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+/** Re-checks with the gateway and may update the record and send the result webhook and SMS once. */
+const CHECK = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+/** Opens a payment page; no money moves until the customer pays. */
+const CREATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+/** Completes an approved payment; running it twice returns the same result. */
+const EXECUTE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
+/** Moves money or sends SMS. */
+const MONEY = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
+
 const MONEY_NOTE = " In live mode this moves real money.";
 
 export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fetch): McpServer {
@@ -45,7 +57,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "Connector status",
       description: "Shows whether the connector is in sandbox or live mode and which providers are configured.",
       inputSchema: {},
-      annotations: { readOnlyHint: true },
+      annotations: LOCAL_READ,
     },
     () =>
       run(async () => ({
@@ -85,6 +97,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         description: z.string().max(200).optional().describe("What the payment is for"),
         reference: z.string().max(100).optional().describe("Your own order or invoice number"),
       },
+      annotations: CREATE,
     },
     (args) =>
       run(() =>
@@ -104,6 +117,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "Check a payment",
       description: "Asks the gateway for the latest result of a payment made with payment_create and returns the full record (status, amount, customer, transaction ID).",
       inputSchema: { order_id: z.string().min(1) },
+      annotations: CHECK,
     },
     (args) => run(() => bd.verifyPayment(args.order_id)),
   );
@@ -118,7 +132,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         search: z.string().optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },
-      annotations: { readOnlyHint: true },
+      annotations: LOCAL_READ,
     },
     (args) =>
       run(async () => {
@@ -137,7 +151,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         amount: z.number().positive().optional(),
         reason: z.string().max(255).optional(),
       },
-      annotations: { destructiveHint: true },
+      annotations: MONEY,
     },
     (args) => run(() => bd.refundPayment(args.order_id, args.amount, args.reason)),
   );
@@ -154,6 +168,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         payer_reference: z.string().max(255).optional().describe("Optional customer reference, such as a phone number"),
         callback_url: z.string().url().optional().describe("Where bKash sends the customer afterwards. Defaults to BKASH_CALLBACK_URL"),
       },
+      annotations: CREATE,
     },
     (args) =>
       run(() =>
@@ -172,7 +187,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "bKash: complete payment",
       description: "Completes a bKash payment the customer has approved. Call once per payment." + MONEY_NOTE,
       inputSchema: { payment_id: z.string().min(1).describe("paymentId from bkash_create_payment") },
-      annotations: { destructiveHint: true, idempotentHint: true },
+      annotations: EXECUTE,
     },
     (args) => run(() => needBkash().executePayment(args.payment_id)),
   );
@@ -183,7 +198,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "bKash: payment status",
       description: "Looks up the current status of a bKash payment.",
       inputSchema: { payment_id: z.string().min(1) },
-      annotations: { readOnlyHint: true },
+      annotations: READ,
     },
     (args) => run(() => needBkash().getPayment(args.payment_id)),
   );
@@ -199,7 +214,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         amount: z.number().positive().optional().describe("Amount in BDT. Omit for the full refundable amount"),
         reason: z.string().max(255).optional(),
       },
-      annotations: { destructiveHint: true },
+      annotations: MONEY,
     },
     (args) =>
       run(() =>
@@ -218,6 +233,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         order_id: z.string().regex(/^[A-Za-z0-9]{1,20}$/).describe("Your unique order id: 1-20 letters or digits"),
         callback_url: z.string().url().optional().describe("Where Nagad sends the customer afterwards. Defaults to NAGAD_CALLBACK_URL"),
       },
+      annotations: CREATE,
     },
     (args) => run(() => needNagad().createPayment({ amount: args.amount, orderId: args.order_id, callbackUrl: args.callback_url })),
   );
@@ -228,7 +244,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "Nagad: payment status",
       description: "Asks Nagad whether a payment succeeded. This is the reliable check; don't trust the customer's redirect alone.",
       inputSchema: { payment_ref_id: z.string().min(1).describe("paymentRefId from nagad_create_payment") },
-      annotations: { readOnlyHint: true },
+      annotations: READ,
     },
     (args) => run(() => needNagad().getPayment(args.payment_ref_id)),
   );
@@ -252,6 +268,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         fail_url: z.string().url().optional(),
         cancel_url: z.string().url().optional(),
       },
+      annotations: CREATE,
     },
     (args) =>
       run(() =>
@@ -277,7 +294,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "SSLCommerz: payment status",
       description: "Looks up an SSLCommerz payment by your transaction id and lists every attempt with its status.",
       inputSchema: { tran_id: z.string().min(1) },
-      annotations: { readOnlyHint: true },
+      annotations: READ,
     },
     (args) => run(() => needSsl().getPayment(args.tran_id)),
   );
@@ -293,7 +310,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         remarks: z.string().min(1).max(255),
         reference_id: z.string().optional().describe("Your own reference for this refund"),
       },
-      annotations: { destructiveHint: true },
+      annotations: MONEY,
     },
     (args) =>
       run(() =>
@@ -307,7 +324,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "SSLCommerz: refund status",
       description: "Checks the status of an SSLCommerz refund.",
       inputSchema: { refund_ref_id: z.string().min(1) },
-      annotations: { readOnlyHint: true },
+      annotations: READ,
     },
     (args) => run(() => needSsl().getRefund(args.refund_ref_id)),
   );
@@ -330,6 +347,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         customer_city: z.string().optional(),
         return_url: z.string().url().optional().describe("Defaults to SHURJOPAY_RETURN_URL"),
       },
+      annotations: CREATE,
     },
     (args) =>
       run(() =>
@@ -351,7 +369,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "shurjoPay: payment status",
       description: "Asks shurjoPay whether a payment succeeded.",
       inputSchema: { sp_order_id: z.string().min(1).describe("spOrderId from shurjopay_create_payment") },
-      annotations: { readOnlyHint: true },
+      annotations: READ,
     },
     (args) => run(() => needShurjopay().getPayment(args.sp_order_id)),
   );
@@ -370,6 +388,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         customer_email: z.string().email().optional(),
         success_url: z.string().url().optional().describe("Defaults to AAMARPAY_SUCCESS_URL"),
       },
+      annotations: CREATE,
     },
     (args) =>
       run(() =>
@@ -391,7 +410,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "aamarPay: payment status",
       description: "Asks aamarPay whether a payment succeeded, by your order id.",
       inputSchema: { order_id: z.string().min(1) },
-      annotations: { readOnlyHint: true },
+      annotations: READ,
     },
     (args) => run(() => needAamarpay().getPayment(args.order_id)),
   );
@@ -407,7 +426,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
         numbers: z.array(z.string().min(1)).min(1).max(100).describe("Numbers like 01712345678 or +8801712345678"),
         message: z.string().min(1).max(1000),
       },
-      annotations: { destructiveHint: true, openWorldHint: true },
+      annotations: MONEY,
     },
     (args) => run(() => needSms().send(args.numbers, args.message)),
   );
@@ -418,7 +437,7 @@ export function createServer(source: BdConnector | Config, fetchFn: FetchFn = fe
       title: "SMS: balance",
       description: "Shows the remaining BulkSMSBD balance in BDT.",
       inputSchema: {},
-      annotations: { readOnlyHint: true },
+      annotations: READ,
     },
     () => run(() => needSms().balance()),
   );
